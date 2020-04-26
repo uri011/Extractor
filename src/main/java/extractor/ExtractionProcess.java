@@ -1,9 +1,14 @@
 package extractor;
 
+import io.Binary;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.concurrent.TimeUnit;
+import util.ExtractionProperties;
+import util.KStick;
+import util.TimeTool;
 
 /**
  * @author Uri
@@ -14,97 +19,121 @@ import java.util.Date;
 public class ExtractionProcess {
     
     private final ExtractionProperties properties;
-    private final Month month;
+    private final ServerExtractor serverExtractor;
+    private final Date startDate;
+    private final Date endDate;
     
-    private ServerExtractor se;
-    private BinaryIO io;
-    private ArrayList<KStick> extractedData;    // Extracted Data
     private String startTime;                   // Start Time Timestamp
     private String limit;                       // Extraction limit
+    
+    private Binary io;
+    private ArrayList<KStick> extractedData;    // Extracted Data
+    
+    private int targetMonth;
+    private int targetYear;
+    private int countTotal;                           
+    private int countExtracted;                     
+
     private String[] seo;
-    private int extN;                           // Total Number of Extractions
-    private int extC;                           // Current Number of Extractions
-    private int mthC;                           // Current Extraction Month
     private long aux;
     
-    public ExtractionProcess(ExtractionProperties p) {
+    public ExtractionProcess(ExtractionProperties p, Date start, Date end) {
         
         this.properties = p;
-        this.month = new Month(this.properties.getYID());
+        this.serverExtractor = new ServerExtractor(this.properties.getDataSource());
+        
+        if(this.properties.getDataStartDate().before(start))
+            this.startDate = start;
+        else
+            this.startDate = this.properties.getDataStartDate();
+        
+        if(new Date(System.currentTimeMillis()).after(end))
+            this.endDate = end;
+        else
+            this.endDate = new Date(System.currentTimeMillis());
         
         this.extractedData = new ArrayList<>();
-        this.startTime = "null";
+        this.startTime = "new";
         this.limit = "null";
         this.seo = new String[2];
     }
     
     // Extracts and saves the data from the start month to the end month [ JA : 0 - DC : 11 ]
-    public void startExtraction(int start, int end) throws IOException, FileNotFoundException, ClassNotFoundException {
+    public void startExtraction() throws IOException, FileNotFoundException, ClassNotFoundException {
         
-        this.mthC = start;
+        this.targetYear = this.startDate.getYear() + 1900;
+        this.targetMonth = this.startDate.getMonth();
         
-        while(this.mthC <= end) {
-            this.properties.updateID(this.month.getMID(this.mthC) + Integer.toString(this.properties.getYID()));
-            this.se = new ServerExtractor(this.properties.getSourcePath());
-            this.io = new BinaryIO(this.properties.getFilePath(), this.properties.getN());
-            this.extractMonth(this.month.getMID(this.mthC));
-            this.mthC++;
+        while(this.targetYear < (this.endDate.getYear() + 1900)) {  
+            while(this.targetMonth <= 11) {
+                
+                this.properties.updateDataFileID(this.properties.getID() + this.targetYear + "_" + TimeTool.getMonthID(this.targetMonth));
+                
+                this.io = new Binary(this.properties.getDataDirectory() + this.properties.getID() + "/" + this.properties.getDataFileID() + ".txt", 0);
+                this.extract();
+                this.targetMonth++;
+            }
+            this.targetMonth = 0;
+            this.targetYear++;
+        }
+        
+        while(this.targetMonth <= this.endDate.getMonth()) {
+            
+            this.properties.updateDataFileID(this.properties.getID() + this.targetYear + "_" + TimeTool.getMonthID(this.targetMonth));
+                
+            this.io = new Binary(this.properties.getDataDirectory() + this.properties.getID() + "/" + this.properties.getDataFileID() + ".txt", 0);
+            this.extract();
+            this.targetMonth++;
         }
     }
     
-    // Extracts and saves the data from month
-    private void extractMonth(String m) throws IOException, FileNotFoundException, ClassNotFoundException {
+    // Extracts and saves the data of targeted month
+    private void extract() throws IOException, FileNotFoundException, ClassNotFoundException {
         
-        this.extC = 0;
-        //this.extN = (this.month.getNumDays(m) * 24 * 60); // Number of extractions to do [ Month minutes ]
-        this.extN = 1002;
+        this.countExtracted = 0;
+        
+        if("new".equals(this.startTime))
+            this.countTotal = (int) TimeUnit.MINUTES.convert(new Date(this.targetYear - 1900, this.targetMonth, TimeTool.getDaysOnMonth(this.targetYear, this.targetMonth), 23, 59, 00).getTime() - this.properties.getDataStartDate().getTime(), TimeUnit.MILLISECONDS);
+        else
+            this.countTotal = (TimeTool.getDaysOnMonth(this.targetYear, this.targetMonth) * 24 * 60); // Number of extractions to do [ Month minutes ]
         
         this.extractedData.clear();
         
-        while(this.extC < this.extN) {
+        while(this.countExtracted < this.countTotal) {
             this.updateSTL();
-            this.extractedData = se.extract(this.startTime, this.limit);
-            this.extC = this.extC + Integer.parseInt(this.limit);
-            System.out.println(this.extC + " extractions of " + this.extN);
-            //try{Thread.sleep(50000);}catch(InterruptedException e){ System.out.println(e);}
+            this.extractedData = this.serverExtractor.extract(this.startTime, this.limit);
+            this.countExtracted = this.countExtracted + Integer.parseInt(this.limit);
+            try{Thread.sleep(1100);}catch(InterruptedException e){ System.out.println(e);}
         }
         
         this.startTime = "null";
+        
         this.seo = this.io.write(this.extractedData);
-        this.properties.updateN(this.extC);
+        this.properties.updateN(this.countExtracted);
         this.properties.updateStartObject(this.seo[0]);
         this.properties.updateEndObject(this.seo[1]);
         
-        
-        // IMPRIMIR TOTES LES DADES GUARDADES DEL MES, NOMES PER COMPROVAR BON FUNCIONAMENT
-        ArrayList<KStick> k = new ArrayList<>();
-        k = io.readFile();
-        int i = 0;
-        for( KStick x : k) {
-            System.out.print(i + " : ");
-            System.out.println(x.toString());
-            i++;
-        }
+        System.out.println(this.targetMonth + "." + this.targetYear + " completed with " + this.countTotal + " extractions");
     }
     
     // Updates start time and limit
     private void updateSTL() {
         
-        if(this.startTime == "null") {
-            // First day of month 00:00:00 GMT
-            this.startTime = Long.toString(new Date(this.properties.getYID() - 1900, this.mthC, 1, 1, 0, 0).getTime());
+        if("new".equals(this.startTime)) {
+            this.startTime = Long.toString(this.startDate.getTime());
             this.limit = "1000";
-            
+        } else if("null".equals(this.startTime)) {
+            this.startTime = Long.toString(new Date(this.targetYear - 1900, this.targetMonth, 1, 1, 0, 0).getTime());
+            this.limit = "1000";
         } else { 
-            
             aux = Long.parseLong(this.startTime.substring(0, startTime.length() - 3));
             aux = aux + ((Integer.parseInt(limit)) * 60);
             this.startTime = Long.toString(aux) + "000";
             
-            if((this.extC + 1000) <= this.extN)
+            if((this.countExtracted + 1000) <= this.countTotal)
                 this.limit = "1000";
             else
-                this.limit = Integer.toString(this.extN - this.extC);
+                this.limit = Integer.toString(this.countTotal - this.countExtracted);
         }
     }
 }
